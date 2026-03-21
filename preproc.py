@@ -94,13 +94,11 @@ class LongMemEvalIngestor:
             entities.extend([q.lower() for q in quoted if len(q) > 2])
         return list(set(entities))
 
-    def semantic_similarity(self, question: str, chunk: str) -> float:
-        try:
-            emb = self.encoder.encode([question, chunk], convert_to_numpy=True)
-            sim = np.dot(emb[0], emb[1]) / (np.linalg.norm(emb[0]) * np.linalg.norm(emb[1]))
-            return float(sim)
-        except:
-            return 0.5
+    def batch_encode(self, texts: List[str], batch_size: int = 256) -> np.ndarray:
+        embeddings = self.encoder.encode(texts, convert_to_numpy=True, show_progress_bar=True, batch_size=batch_size)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return embeddings / norms
 
     def cross_session_bonus(self, session_idx: int, total_sessions: int) -> float:
         if total_sessions <= 1:
@@ -159,60 +157,59 @@ class LongMemEvalIngestor:
         return pd.DataFrame(memory_rows), pd.DataFrame(question_rows)
 
     def build_triplets(self, memory_df: pd.DataFrame, questions_df: pd.DataFrame) -> List[MultisessionTriplet]:
-        triplets = []
+        # Batch-encode all memory chunks and questions upfront
+        print("Encoding memory chunks...")
+        chunk_texts = memory_df['content'].tolist()
+        chunk_embeddings = self.batch_encode(chunk_texts)
 
-        for _, row in tqdm(questions_df.iterrows(), total=len(questions_df), desc="Building triplets"):
-            question = row['question']
-            answer = row['answer']
+        print("Encoding questions...")
+        question_texts = questions_df['question'].tolist()
+        question_embeddings = self.batch_encode(question_texts)
+
+        # Build index mapping: question_id -> memory_df row indices
+        memory_indices = memory_df.groupby('question_id').indices
+
+        triplets = []
+        for q_idx, (_, row) in enumerate(tqdm(questions_df.iterrows(), total=len(questions_df), desc="Building triplets")):
             question_id = row['question_id']
             question_date = row['question_date']
-            question_type = row['question_type']
             num_sessions = row['num_sessions']
 
-            question_memory = memory_df[memory_df['question_id'] == question_id]
+            mem_idxs = memory_indices.get(question_id, np.array([], dtype=int))
+            if len(mem_idxs) == 0:
+                continue
 
-            scored_chunks = []
-            for _, mem_row in question_memory.iterrows():
-                chunk_text = mem_row['content']
-                chunk_date = mem_row['date']
-                sess_idx = mem_row['session_index']
+            # Vectorized cosine similarity (embeddings already normalized)
+            mem_embs = chunk_embeddings[mem_idxs]
+            sem_scores = mem_embs @ question_embeddings[q_idx]
 
-                sem_score = self.semantic_similarity(question, chunk_text)
-                temp_score = self.temporal_score(question_date, chunk_date)
-                cross_score = self.cross_session_bonus(sess_idx, num_sessions)
+            # Compute temporal and cross-session scores
+            mem_rows = memory_df.iloc[mem_idxs]
+            temp_scores = np.array([self.temporal_score(question_date, d) for d in mem_rows['date']])
+            cross_scores = np.array([self.cross_session_bonus(s, num_sessions) for s in mem_rows['session_index']])
 
-                total_score = (self.semantic_weight * sem_score +
-                               self.temporal_weight * temp_score +
-                               self.cross_session_weight * cross_score)
+            total_scores = (self.semantic_weight * sem_scores +
+                            self.temporal_weight * temp_scores +
+                            self.cross_session_weight * cross_scores)
 
-                scored_chunks.append({
-                    'content': chunk_text,
-                    'date': chunk_date,
-                    'session_index': sess_idx,
-                    'semantic': sem_score,
-                    'temporal': temp_score,
-                    'cross_session': cross_score,
-                    'total': total_score
-                })
+            # Top N by total score
+            top_k = min(self.fragment_limit, len(total_scores))
+            top_idxs = np.argpartition(total_scores, -top_k)[-top_k:]
+            top_idxs = top_idxs[np.argsort(total_scores[top_idxs])[::-1]]
 
-            # sort and pick top N chunks
-            scored_chunks.sort(key=lambda x: x['total'], reverse=True)
-            final_chunks = scored_chunks[:self.fragment_limit]
-
-            if final_chunks:
-                triplets.append(MultisessionTriplet(
-                    question=question,
-                    answer=answer,
-                    session_id=question_id,
-                    question_date=question_date,
-                    question_type=question_type,
-                    supporting_chunks=[c['content'] for c in final_chunks],
-                    chunk_dates=[c['date'] for c in final_chunks],
-                    chunk_sessions=[c['session_index'] for c in final_chunks],
-                    semantic_scores=[c['semantic'] for c in final_chunks],
-                    temporal_scores=[c['temporal'] for c in final_chunks],
-                    total_scores=[c['total'] for c in final_chunks]
-                ))
+            triplets.append(MultisessionTriplet(
+                question=row['question'],
+                answer=row['answer'],
+                session_id=question_id,
+                question_date=question_date,
+                question_type=row['question_type'],
+                supporting_chunks=[chunk_texts[mem_idxs[i]] for i in top_idxs],
+                chunk_dates=[mem_rows.iloc[i]['date'] for i in top_idxs],
+                chunk_sessions=[int(mem_rows.iloc[i]['session_index']) for i in top_idxs],
+                semantic_scores=[float(sem_scores[i]) for i in top_idxs],
+                temporal_scores=[float(temp_scores[i]) for i in top_idxs],
+                total_scores=[float(total_scores[i]) for i in top_idxs],
+            ))
         return triplets
 
     def prepare_rust_rows(self, triplets: List[MultisessionTriplet]) -> List[Tuple[int, Dict[str, str]]]:
