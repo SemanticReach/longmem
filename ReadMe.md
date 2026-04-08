@@ -1,4 +1,4 @@
-# HyperBinder Achieves Near-Perfect Score on LongMemEval
+# HyperBinder LongMemEval
 
 We evaluated HyperBinder on LongMemEval, a benchmark of 500 questions designed to test long-term memory retrieval in conversational AI systems. HyperBinder achieves **99%–100% accuracy across runs**, reaching a confirmed **500/500 (100%)** with fined tuned configuration and **497/500 (99.4%)** in our primary evaluation.
 
