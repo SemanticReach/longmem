@@ -50,7 +50,7 @@ The primary key is a composite `fact_id` formed from `session_id` + `chunk_index
 ### 1. Ingest
 
 ```bash
-python ingest.py
+python benchmark_ingest.py
 ```
 
 Prompts you to select a dataset index (0–8) and enter a namespace name, then:
@@ -62,7 +62,7 @@ Prompts you to select a dataset index (0–8) and enter a namespace name, then:
 ### 2. Evaluate
 
 ```bash
-python eval.py
+python query.py
 ```
 
 Prompts for the same dataset index and namespace, then:
