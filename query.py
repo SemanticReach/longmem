@@ -37,7 +37,7 @@ def load_questions(json_path: Path) -> list:
 
 def query_longmem(question: str, namespace: str, top_k: int = 1) -> dict:
     response = requests.post(
-        f"{SERVER_URL}/compose/search_slots/long_mem_eval_db/{namespace}",
+        f"{SERVER_URL}/compose/search_slots/long_mem_eval_db_v2/{namespace}",
         headers={"X-API-Key": API_KEY},
         json={
             "slot_queries": {
