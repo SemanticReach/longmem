@@ -123,8 +123,8 @@ Set the following environment variables or provide them in a `.env` file:
 | `API_KEY` | API key for authentication |
 
 Example:
-
-    SERVER_URL=http://your-server:8000
+    hyperbinder server: 
+    SERVER_URL=http://18.220.128.24:8000
     API_KEY=your_api_key
 
 ---
